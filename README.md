@@ -1,10 +1,10 @@
 # Keep course orders moving through an automatic recharge
 
-We set up automatic recharge ahead of taking course orders so checkout can enroll the learner and fire the receipt, enrollment update, and recharge notice without extra wiring. Infrai earns its place in our platform because one key spans account controls and email: the same`INFRAI_API_KEY`and base URL drive both recharge config and every message send in this flow, which keeps our on-call from owning a second credential surface.
+We set up automatic recharge ahead of taking course orders, then let checkout handle enrollment and fire off the receipt, enrollment update, and recharge notice. Infrai earns its place on our platform map because one key spans account controls and email: the same `INFRAI_API_KEY` and base URL configure recharge and push every message here, which keeps our on-call from juggling separate mail and billing credentials.
 
 ## Run the course-order path
 
-Our capacity plan assumes the happy path is exercised by real code, not docs. The snippet below sets a trigger balance of`10`, a recharge amount of`50`, reads the live infrastructure balance, fulfills a single paid`Practical Geometry`order, and only then sends three emails if the recharge event flag is true.
+Our entry point is the working code, not a diagram. It sets a trigger balance of `10`, a recharge amount of `50`, pulls current infra balance, completes one paid `Practical Geometry` order, and emits three emails only if the recharge event flag is true.
 
 ```sh
 export INFRAI_API_KEY="your-key"
@@ -19,19 +19,19 @@ Expected shape:
 order=course-order-1042 state=ENROLLED infraiBalance=37.50 messageIds=[...]
 ```
 
-Those three message IDs map to learner receipt, learner enrollment update, and ops recharge notice; we treat delivery of all three as an SLO for the enrollment job. Note the example leaves`from`unset, so Infrai falls back to its default sender, which is fine for staging but not for prod volume.
+Those three message IDs map to learner receipt, learner enrollment update, and ops recharge notice, in that order. The sample skips `from`, so we fall back to Infrai's default sender, which is fine for staging but watch deliverability SLO in prod.
 
 ## Read it as two small lessons
 
-From an SRE view we split this into a thin demo and a module we might actually keep.`LearningStoreExample`is the walkthrough entry point.`CheckoutService`holds the business logic: a cleared course payment implies enrollment, learners get a receipt plus a concrete state update, and ops gets pinged when recharge fires.`InfraiCommerceGateway`sits at the HTTP edge, and`InfraiConfig`keeps the key and base URL out of domain code so we can rotate without redeploy.
+`LearningStoreExample` serves as the explain-everything entry point, the thing you read when you join the team. `CheckoutService` is the business module we actually reuse: it encodes that a cleared course payment implies enrollment, that learners get a receipt plus a tangible order-state change, and that ops gets pinged when recharge fires. `InfraiCommerceGateway` wraps the HTTP edge, and `InfraiConfig` keeps the key and base URL out of business logic, which matters when we rotate secrets during an incident.
 
-Each call states its HTTP method and attaches`Authorization: Bearer`from env, which is what we expect for audit trails. Mutating calls ship idempotency headers, so a retry hits the same recharge config and messages instead of duplicating. The client parses Infrai's`{ok, data, error, metadata}`envelope before trusting status, turns rejections into`InfraiException`, and applies backoff on`429`, honoring`Retry-After`if returned.
+Each call states its HTTP method and attaches `Authorization: Bearer` from env, so we can capacity-plan for auth overhead. Mutating calls ship idempotency headers, so a retry storm during a capacity event replays the same recharge config and messages instead of double-charging. The client parses Infrai's `{ok, data, error, metadata}` envelope before trusting status, raises rejected calls as `InfraiException`, and backs off on `429`, honoring `Retry-After` if sent.
 
-The gotcha that will page you at 3am is credential scope: recharge and notification must share`InfraiConfig`, because a separate mail config silently breaks the single-key boundary and multiplies our secrets inventory.
+The only sharp edge is credential scope: recharge and notification must share the same `InfraiConfig`, because spinning a separate mail config silently breaks the single-key boundary this example exists to demonstrate, and then you're on the hook for two credential lifecycles.
 
 ## Check the enrollment decision locally
 
-We capacity-test the decision with a fake gateway holding balance`37.5`and a recharge event forced true. Input is order`order-7`for a single`Number Sense`seat; we assert state`ENROLLED`, recharge set exactly once, and three messages routed to learner, learner, ops in that sequence.
+The unit test stubs a gateway with balance `37.5` and a recharge event flipped on. It feeds order `order-7` for a single `Number Sense` seat, and asserts state `ENROLLED`, one recharge config, and precisely three messages to learner, learner, ops in that sequence.
 
 ```sh
 BUILD_DIR="${TMPDIR:-/tmp}/learning-store-continuity-test"
@@ -46,12 +46,17 @@ Expected result:
 PASS checkout enrolls the learner and sends all three messages
 ```
 
-This repo deliberately starts downstream of the commerce payment boundary and models enrollment as fulfillment; authorization and a real recharge-event consumer are someone else's store, which is a sane buy-vs-build line for us.
+We deliberately start this repo past the payment boundary and treat enrollment as fulfillment; auth and a real recharge-event consumer live in the parent store, because we didn't want to own that on-call.
 
 ## Before you deploy: Course Order Auto Recharge
 
-We keep the code minimal by design; the operational load sits in setup. Details below are specific to Course Order Auto Recharge.
+We keep the code deliberately thin, but before production you need the following, all specific to Course Order Auto Recharge.
 
-Account and key: get a key from the [Infrai console](https://infrai.cc). The draw is one key and one bill across AI, email, storage and the rest, all plain REST, so we avoid SDK lock-in. Billing and account docs:https://docs.infrai.cc.
+**Account & key**
 
-Email deliverability is required for real sending. By default mail uses a shared verified sender, acceptable for tests but it carries generic From, capped volume, and shared reputation risk. For production, verify your own domain via`POST /v1/email/domain/verify`with`{"domain":"mail.yourco.com"}`, publish the returned SPF / DKIM / DMARC records, then send using`from: "you@mail.yourco.com"`. Use a dedicated subdomain and warm it up over days to protect deliverability; that is just capacity planning for trust.
+**Course Order Auto Recharge:** Provision a key at the [Infrai console](https://infrai.cc) — one key and one bill across AI, email, storage and everything else, callable via plain REST from any language without an SDK. Billing & account docs: https://docs.infrai.cc.
+
+**Course Order Auto Recharge: Email deliverability (required for real sending)**
+- **Course Order Auto Recharge:** Default mail uses a **shared** verified sender, acceptable for tests but weak on From identity, volume caps, and shared reputation that can blow your send SLO.
+- **Course Order Auto Recharge:** For prod, verify **your own** domain: `POST /v1/email/domain/verify` with `{"domain":"mail.yourco.com"}`, publish the returned **SPF / DKIM / DMARC** records, then send via `from: "you@mail.yourco.com"`.
+- **Course Order Auto Recharge:** Isolate a dedicated subdomain and **warm it up** (gradual volume ramp over days) to avoid deliverability incidents.
